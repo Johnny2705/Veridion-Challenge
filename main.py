@@ -1,13 +1,12 @@
 import requests
 from time import sleep
-import spacy
 import numpy as np
+from sentence_transformers import SentenceTransformer, util
 
-# 1. Încarcă modelul spaCy mare
-# Asigură-te că rulezi în terminal: python -m spacy download en_core_web_lg
-nlp = spacy.load("en_core_web_lg")
+# 1. Incarcam modelul
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-# 2. Configurații de rețea
+# 2. Config de retea
 host = "http://172.18.4.158:8000"
 post_url = f"{host}/submit-word"
 get_url = f"{host}/get-word"
@@ -15,7 +14,7 @@ status_url = f"{host}/status"
 
 NUM_ROUNDS = 5
 
-# 3. Lista de cuvinte a jucătorului cu costuri
+# 3. Cuvintele jucatorului cu costuri
 PLAYER_WORDS = [
     {"id": 1, "word": "Feather", "cost": 1},
     {"id": 2, "word": "Coal", "cost": 1},
@@ -79,257 +78,104 @@ PLAYER_WORDS = [
     {"id": 60, "word": "Entropy", "cost": 45}
 ]
 
-# 4. Mapping pentru cuvinte cunoscute: asociază domeniul semantic
-# Am extins mapping-ul pentru a fi mai specific. De exemplu:
-# - "Coal", "Pebble", "Rock", "Stone" devin "mineral"
-# - "Leaf", "Twig" devin "plant"
-# - "Whale" devine "aquatic"
-DOMAIN_MAP = {
-    "Feather": "light",
-    "Coal": "mineral",
-    "Pebble": "mineral",
-    "Leaf": "plant",
-    "Paper": "information",
-    "Rock": "mineral",
-    "Water": "fluid",
-    "Twig": "plant",
-    "Sword": "weapon",
-    "Shield": "defense",
-    "Gun": "weapon",
-    "Flame": "fire",
-    "Rope": "connection",
-    "Disease": "negative",
-    "Cure": "healing",
-    "Bacteria": "nature",
-    "Shadow": "mysterious",
-    "Light": "positive",
-    "Virus": "negative",
-    "Sound": "communication",
-    "Time": "abstract",
-    "Fate": "abstract",
-    "Earthquake": "destruction",
-    "Storm": "destruction",
-    "Vaccine": "healing",
-    "Logic": "abstract",
-    "Gravity": "physical",
-    "Robots": "technology",
-    "Stone": "mineral",
-    "Echo": "communication",
-    "Thunder": "elemental",  # considerăm thunder ca fiind un fenomen elementar
-    "Karma": "abstract",
-    "Wind": "fluid",
-    "Ice": "cold",
-    "Sandstorm": "destruction",
-    "Laser": "technology",
-    "Magma": "fire",
-    "Peace": "abstract",
-    "Explosion": "destruction",
-    "War": "conflict",
-    "Enlightenment": "abstract",
-    "Nuclear Bomb": "destruction",
-    "Volcano": "elemental",
-    "Whale": "aquatic",
-    "Earth": "nature",
-    "Moon": "celestial",
-    "Star": "celestial",
-    "Tsunami": "destruction",
-    "Supernova": "celestial",
-    "Antimatter": "science",
-    "Plague": "negative",
-    "Rebirth": "abstract",
-    "Tectonic Shift": "destruction",
-    "Gamma-Ray Burst": "celestial",
-    "Human Spirit": "abstract",
-    "Apocalyptic Meteor": "destruction",
-    "Earth’s Core": "physical",
-    "Neutron Star": "celestial",
-    "Supermassive Black Hole": "celestial",
-    "Entropy": "abstract",
-    # Exemplu pentru particule fine:
-    "Dust": "powder",
-    "Ash": "powder"
+# 4. Embeddinguri precalculate
+WORD_EMB = {w['word']: model.encode(w['word'], convert_to_tensor=True) for w in PLAYER_WORDS}
+
+# 5. Bonus de sinergie - relații de întărire
+# Redefine the synergy bonus mapping after kernel reset
+
+BONUS_SYNERGY = {
+    "fire": ["ice", "cold", "freeze", "extinguish"],
+    "ice": ["fire", "heat", "burn", "melt"],
+    "light": ["dark", "shadow", "night", "obscure"],
+    "dark": ["light", "shine", "radiance", "glow"],
+    "water": ["fire", "lava", "burn", "flame"],
+    "earth": ["flood", "collapse", "shake", "quake"],
+    "shield": ["sword", "attack", "weapon", "strike"],
+    "sword": ["armor", "defense", "shield", "barrier"],
+    "logic": ["chaos", "emotion", "instinct", "impulse", "irrational", "random", "myth"],
+    "time": ["death", "decay", "aging", "end"],
+    "vaccine": ["virus", "disease", "infection", "bacteria"],
+    "cure": ["illness", "sick", "plague", "symptom"],
+    "peace": ["war", "conflict", "battle", "aggression"],
+    "gravity": ["float", "levitate", "air", "weightless", "zero-g"],
+    "laser": ["darkness", "blind", "shadow", "cover"],
+    "explosion": ["structure", "building", "wall", "construction"],
+    "wind": ["smoke", "cloud", "gas", "ash"],
+    "sound": ["silence", "quiet", "mute", "hush"],
+    "entropy": ["order", "structure", "pattern", "law"],
+    "rebirth": ["death", "end", "despair", "decay"],
+    "magma": ["ice", "freeze", "cold", "chill"],
+    "storm": ["calm", "peace", "clear", "still"],
+    "thunder": ["whisper", "silence", "mute", "quiet"],
+    "human spirit": ["hopeless", "despair", "collapse", "apathy"],
+    "nuclear bomb": ["city", "civilization", "structure", "society"],
 }
 
-# 5. Scorurile domeniilor (puterea fiecărui domeniu)
-DOMAIN_STRENGTH = {
-    "light": 1,
-    "energy": 2,
-    "mineral": 3,
-    "nature": 3,
-    "plant": 2,
-    "animal": 3,
-    "aquatic": 4,
-    "powder": 1,
-    "information": 1,
-    "strength": 3,
-    "fluid": 2,
-    "weapon": 4,
-    "defense": 4,
-    "fire": 5,
-    "connection": 1,
-    "negative": 1,
-    "healing": 3,
-    "mysterious": 2,
-    "positive": 3,
-    "communication": 1,
-    "abstract": 6,
-    "destruction": 5,
-    "technology": 4,
-    "cold": 2,
-    "conflict": 5,
-    "celestial": 4,
-    "science": 4,
-    "physical": 3,
-    "elemental": 5,
-    "magical": 7  # poți folosi dacă adaugi domeniul "magical" în mapping
-}
+BONUS_SYNERGY
 
-# 6. Domenii și prototipuri (pentru cuvinte necunoscute)
-DOMAIN_WORDS = {
-    "destruction": ["bomb", "explosion", "nuclear", "tsunami"],
-    "healing": ["cure", "vaccine", "healing", "medicine"],
-    "weapon": ["sword", "gun", "rifle", "weapon"],
-    "mineral": ["coal", "pebble", "rock", "stone", "ore", "crystal"],
-    "plant": ["leaf", "twig", "vine", "flower", "grass"],
-    "nature": ["earth", "tree"],
-    "aquatic": ["whale", "dolphin", "shark", "fish", "seal"],
-    "powder": ["dust", "ash", "silt", "powder"],
-    "abstract": ["logic", "time", "fate", "enlightenment", "philosophy", "greed", "excess", "avarice"],
-    "elemental": ["volcano", "thunder", "storm"],
-    # Poți adăuga și alte domenii, de exemplu:
-    "magical": ["dragon", "phoenix", "unicorn", "spell"]
-}
 
-# 7. Calcul vectori medii pentru fiecare domeniu (pentru clasificarea cuvintelor necunoscute)
-domain_vectors = {}
-for domain, words in DOMAIN_WORDS.items():
-    vectors = []
-    for w in words:
-        doc = nlp(w)
-        if doc.has_vector:
-            vectors.append(doc.vector)
-    if vectors:
-        domain_vectors[domain] = np.mean(vectors, axis=0)
-    else:
-        domain_vectors[domain] = np.zeros(nlp.vocab.vectors_length)
+BONUS_VECTORS = {k: model.encode(v, convert_to_tensor=True) for k, v in BONUS_SYNERGY.items()}
 
-def assign_domain(word):
-    """
-    Atribuie un domeniu pentru cuvinte necunoscute folosind similaritatea cosine.
-    """
-    doc = nlp(word)
-    if not doc.has_vector:
-        return "abstract"
-    word_vector = doc.vector
-    best_domain = None
-    best_similarity = -1
-    for d, vec in domain_vectors.items():
-        norm_product = np.linalg.norm(word_vector) * np.linalg.norm(vec) + 1e-10
-        similarity = np.dot(word_vector, vec) / norm_product
-        if similarity > best_similarity:
-            best_similarity = similarity
-            best_domain = d
-    return best_domain
+def synergy_score(word):
+    emb = model.encode(word, convert_to_tensor=True)
+    score = 0
+    for domain, vectors in BONUS_VECTORS.items():
+        sim = util.cos_sim(emb, vectors).max().item()
+        score = max(score, sim)
+    return score
 
-def get_abstraction(word):
-    """
-    Calculează 'puterea' unui cuvânt pe baza domeniului său semantic.
-    Dacă cuvântul este cunoscut (prezent în DOMAIN_MAP), se folosește mapping-ul;
-    altfel, se atribuie un domeniu prin NLP.
-    """
-    domain = DOMAIN_MAP.get(word)
-    if domain is None:
-        domain = assign_domain(word)
-    return DOMAIN_STRENGTH.get(domain, 0)
+def choose_best_word(unknown_word, alpha=0.6, beta=0.05, gamma=1.2):
+    unknown_emb = model.encode(unknown_word, convert_to_tensor=True)
+    best = None
+    best_score = -float('inf')
 
-# 8. Algoritmul de selecție cu penalizare și bonus de similaritate:
-def effective_cost(candidate, unknown_word, penalty_factor=10, sim_factor=5):
-    """
-    Calculează costul efectiv pentru un candidat:
-      - Dacă puterea candidatului >= puterea cuvântului necunoscut: cost efectiv = cost
-      - Altfel: cost efectiv = cost + penalty_factor * (unknown_score - candidate_score)
-    Se scade un bonus bazat pe similaritatea cosine dintre cuvintele candidat și necunoscut.
-    """
-    unknown_score = get_abstraction(unknown_word)
-    candidate_score = get_abstraction(candidate['word'])
-    base_cost = candidate['cost']
-    if candidate_score >= unknown_score:
-        effective = base_cost
-    else:
-        effective = base_cost + penalty_factor * (unknown_score - candidate_score)
-    
-    similarity = nlp(candidate['word']).similarity(nlp(unknown_word))
-    effective -= sim_factor * similarity
-    return effective
+    for word in PLAYER_WORDS:
+        cand_emb = WORD_EMB[word['word']]
+        sim = util.cos_sim(unknown_emb, cand_emb).item()
+        sync = synergy_score(word['word'])
+        cost_pen = word['cost'] * beta
+        score = gamma * sync + alpha * sim - cost_pen
+        if score > best_score:
+            best_score = score
+            best = word
+    return best
 
-def adaptive_what_beats(unknown_word, player_words=PLAYER_WORDS, penalty_factor=10, sim_factor=5):
-    best_candidate = None
-    best_eff_cost = float('inf')
-    for candidate in player_words:
-        cost_eff = effective_cost(candidate, unknown_word, penalty_factor, sim_factor)
-        if cost_eff < best_eff_cost:
-            best_eff_cost = cost_eff
-            best_candidate = candidate
-    return best_candidate
-
-# 9. Funcția de joc: pentru fiecare rundă, facem un singur apel GET, apoi POST, apoi GET status.
 def play_game(player_id):
-    """
-    Pentru fiecare rundă:
-      - Face un apel GET și preia obiectul cu "word" și "round" corespunzător.
-      - Folosește adaptive_what_beats pentru a alege cuvântul.
-      - Trimite alegerea prin POST și apoi preia statusul jocului.
-    Se presupune că JSON-ul de la GET are forma:
-    {
-      "word": "<cuvânt_sistem>",
-      "round": <număr_rundă>
-    }
-    """
     for round_id in range(1, NUM_ROUNDS + 1):
-        round_num = -1
-        unknown_word = ""
-        system_data = {}
-        while round_num != round_id:
-            response = requests.get(get_url)
+        while True:
             try:
-                json_response = response.json()
-            except ValueError:
-                json_response = {}
-            
-            if isinstance(json_response, list):
-                system_data = next((item for item in json_response if item.get('round') == round_id), {})
-            else:
-                system_data = json_response
-            
-            unknown_word = system_data.get('word', '')
-            round_num = system_data.get('round', -1)
-            print(f"Waiting for round {round_id}, received round {round_num} - word: {unknown_word}")
-            sleep(1)
-        
-        print(f"\n=== Handling round {round_id} ===")
-        word_domain = assign_domain(unknown_word)
-        word_power = get_abstraction(unknown_word)
-        print(f"System word: {unknown_word} (Power: {word_power}, Domain: {word_domain})")
-        
-        chosen_candidate = adaptive_what_beats(unknown_word)
-        chosen_power = get_abstraction(chosen_candidate['word'])
-        print(f"Chosen word: {chosen_candidate['word']} (Power: {chosen_power}, Cost: {chosen_candidate['cost']})")
-        
-        data = {"player_id": player_id, "word_id": chosen_candidate['id'], "round_id": round_id}
-        post_response = requests.post(post_url, json=data)
+                res = requests.get(get_url).json()
+                if isinstance(res, list):
+                    system_data = next((r for r in res if r['round'] == round_id), {})
+                else:
+                    system_data = res
+                if system_data.get('round') == round_id:
+                    break
+            except:
+                pass
+            sleep(0.5)
+
+        sys_word = system_data.get('word', '')
+        print(f"\n=== Round {round_id} ===")
+        print(f"System word: {sys_word}")
+
+        chosen = choose_best_word(sys_word)
+        print(f"Chosen word: {chosen['word']} (Cost: {chosen['cost']})")
+
+        payload = {"player_id": player_id, "word_id": chosen['id'], "round_id": round_id}
         try:
-            print("Post response:", post_response.json())
-        except ValueError:
-            print("Post response:", post_response.text)
-        
-        status_response = requests.get(status_url)
+            print("Post:", requests.post(post_url, json=payload).json())
+        except:
+            print("Post error")
+
         try:
-            print("Status:", status_response.json())
-        except ValueError:
-            print("Status: no valid JSON")
-        print("====================================\n")
+            print("Status:", requests.get(status_url).json())
+        except:
+            print("Status error")
+
+        print("===========================\n")
         sleep(1)
 
 if __name__ == "__main__":
-    player_id = "player123"
-    play_game(player_id)
+    play_game("l1a8Ki1v7A")
