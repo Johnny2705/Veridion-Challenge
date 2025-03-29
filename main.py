@@ -1,13 +1,12 @@
 import requests
 from time import sleep
-import random
 import spacy
 import numpy as np
 
-# Încărcăm modelul spaCy (asigură-te că ai descărcat modelul: python -m spacy download en_core_web_md)
+# 1. Încărcăm modelul spaCy (asigură-te că ai descărcat modelul: python -m spacy download en_core_web_md)
 nlp = spacy.load("en_core_web_md")
 
-# Configurații de rețea
+# 2. Configurații de rețea
 host = "http://172.18.4.158:8000"
 post_url = f"{host}/submit-word"
 get_url = f"{host}/get-word"
@@ -15,7 +14,7 @@ status_url = f"{host}/status"
 
 NUM_ROUNDS = 5
 
-# Lista de cuvinte a jucătorului cu costuri
+# 3. Lista de cuvinte a jucătorului cu costuri
 PLAYER_WORDS = [
     {"id": 1, "word": "Feather", "cost": 1},
     {"id": 2, "word": "Coal", "cost": 1},
@@ -79,6 +78,7 @@ PLAYER_WORDS = [
     {"id": 60, "word": "Entropy", "cost": 45}
 ]
 
+# 4. Mapping pentru cuvinte cunoscute: asociază domeniul semantic
 DOMAIN_MAP = {
     "Feather": "light",
     "Coal": "energy",
@@ -142,6 +142,7 @@ DOMAIN_MAP = {
     "Entropy": "abstract"
 }
 
+# 5. Scorurile domeniilor (puterea fiecărui domeniu)
 DOMAIN_STRENGTH = {
     "light": 1,
     "energy": 2,
@@ -168,6 +169,7 @@ DOMAIN_STRENGTH = {
     "physical": 3
 }
 
+# 6. Domenii și prototipuri (pentru cuvinte necunoscute)
 DOMAIN_WORDS = {
     "destruction": ["bomb", "explosion", "nuclear", "tsunami"],
     "healing": ["cure", "vaccine", "healing", "medicine"],
@@ -176,11 +178,12 @@ DOMAIN_WORDS = {
     "abstract": ["logic", "time", "fate", "enlightenment", "philosophy", "greed", "excess", "avarice"]
 }
 
+# 7. Calcul vectori medii pentru fiecare domeniu (pentru clasificarea cuvintelor necunoscute)
 domain_vectors = {}
 for domain, words in DOMAIN_WORDS.items():
     vectors = []
-    for word in words:
-        doc = nlp(word)
+    for w in words:
+        doc = nlp(w)
         if doc.has_vector:
             vectors.append(doc.vector)
     if vectors:
@@ -198,77 +201,88 @@ def assign_domain(word):
     word_vector = doc.vector
     best_domain = None
     best_similarity = -1
-    for domain, vector in domain_vectors.items():
-        norm_product = np.linalg.norm(word_vector) * np.linalg.norm(vector) + 1e-10
-        similarity = np.dot(word_vector, vector) / norm_product
+    for d, vec in domain_vectors.items():
+        norm_product = np.linalg.norm(word_vector) * np.linalg.norm(vec) + 1e-10
+        similarity = np.dot(word_vector, vec) / norm_product
         if similarity > best_similarity:
             best_similarity = similarity
-            best_domain = domain
+            best_domain = d
     return best_domain
 
 def get_abstraction(word):
     """
-    Calculează "puterea" unui cuvânt pe baza domeniului său semantic.
-    Dacă cuvântul este cunoscut, se folosește mapping-ul; altfel, se atribuie prin NLP.
+    Calculează 'puterea' unui cuvânt pe baza domeniului său semantic.
+    Dacă cuvântul este cunoscut (prezent în DOMAIN_MAP), se folosește mapping-ul;
+    altfel, se atribuie un domeniu prin NLP.
     """
     domain = DOMAIN_MAP.get(word)
     if domain is None:
         domain = assign_domain(word)
     return DOMAIN_STRENGTH.get(domain, 0)
 
-def adaptive_what_beats(unknown_word, player_words=PLAYER_WORDS):
+# 8. Algoritmul de selecție cu penalizare:
+def adaptive_what_beats(unknown_word, player_words=PLAYER_WORDS, penalty_factor=10):
+    """
+    Pentru fiecare candidat, calculăm costul efectiv:
+      - Dacă puterea candidatului >= puterea cuvântului necunoscut: cost efectiv = cost
+      - Altfel: cost efectiv = cost + penalty_factor * (unknown_score - candidate_score)
+    Alegem candidatul cu costul efectiv minim.
+    """
     unknown_score = get_abstraction(unknown_word)
-    winning_candidates = [c for c in player_words if get_abstraction(c['word']) > unknown_score]
-    if winning_candidates:
-        return min(winning_candidates, key=lambda c: c['cost'])
-    else:
-        return min(player_words, key=lambda c: c['cost'])
+    best_candidate = None
+    best_effective_cost = float('inf')
+    for candidate in player_words:
+        candidate_score = get_abstraction(candidate['word'])
+        base_cost = candidate['cost']
+        if candidate_score >= unknown_score:
+            effective_cost = base_cost
+        else:
+            difference = unknown_score - candidate_score
+            effective_cost = base_cost + penalty_factor * difference
+        if effective_cost < best_effective_cost:
+            best_effective_cost = effective_cost
+            best_candidate = candidate
+    return best_candidate
 
+# 9. Funcția de joc: pentru fiecare rundă, facem un singur apel GET, apoi POST, apoi GET status.
 def play_game(player_id):
     """
-    Așteaptă runda corectă de la server, apoi alege cuvântul potrivit.
-    Serverul returnează un JSON de forma:
-    {
-      "word": "<cuvânt_sistem>",
-      "round": <număr_rundă>
-    }
+    Pentru fiecare rundă:
+      - Face un singur apel GET și preia obiectul cu "word" și "round"
+      - Folosește funcția adaptive_what_beats pentru a alege cuvântul
+      - Face POST cu alegerea și preia statusul jocului
     """
     for round_id in range(1, NUM_ROUNDS + 1):
-        round_num = -1
+        # Face un apel GET pentru runda curentă
+        response = requests.get(get_url)
+        try:
+            json_response = response.json()
+        except ValueError:
+            json_response = {}
         
-        # Așteptăm până primim runda care corespunde lui round_id
-        while round_num != round_id:
-            response = requests.get(get_url)
-            try:
-                json_response = response.json()
-            except ValueError:
-                json_response = {}
-            
-            # Extragem cuvântul și runda
-            unknown_word = json_response.get('word', '')
-            round_num = json_response.get('round', -1)
-            
-            print(f"Waiting for round {round_id}, received round {round_num} - word: {unknown_word}")
-            sleep(1)  # Mică pauză pentru a evita spam-ul
-
-        # Odată ce round_num == round_id, putem face selecția
-        print(f"\n=== Handling round {round_id} ===")
-        print(f"System word: {unknown_word} (Power: {get_abstraction(unknown_word)}, Domain: {assign_domain(unknown_word)})")
-
-        if round_id > 1:
-            status = requests.get(status_url)
-            print("Status:", status.json())
+        unknown_word = json_response.get('word', '')
+        received_round = json_response.get('round', -1)
+        print(f"Round {round_id} - Received round {received_round} - word: {unknown_word}")
         
+        # Se alege cuvântul optim folosind algoritmul de selecție
         chosen_candidate = adaptive_what_beats(unknown_word)
         print(f"Chosen word: {chosen_candidate['word']} (Power: {get_abstraction(chosen_candidate['word'])}, Cost: {chosen_candidate['cost']})")
         
+        # Trimitem alegerea prin POST
         data = {"player_id": player_id, "word_id": chosen_candidate['id'], "round_id": round_id}
-        response = requests.post(post_url, json=data)
+        post_response = requests.post(post_url, json=data)
         try:
-            resp_data = response.json()
+            print("Post response:", post_response.json())
         except ValueError:
-            resp_data = response.text
-        print("Round", round_id, "response:", resp_data)
+            print("Post response:", post_response.text)
+        
+        # Preluăm statusul jocului
+        status_response = requests.get(status_url)
+        try:
+            print("Status:", status_response.json())
+        except ValueError:
+            print("Status: no valid JSON")
+        
         print("====================================\n")
         sleep(1)
 
