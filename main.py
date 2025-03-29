@@ -220,27 +220,37 @@ def get_abstraction(word):
         domain = assign_domain(word)
     return DOMAIN_STRENGTH.get(domain, 0)
 
-# 8. Algoritmul de selecție cu penalizare:
-def adaptive_what_beats(unknown_word, player_words=PLAYER_WORDS, penalty_factor=10):
+# 8. Algoritmul de selecție cu penalizare și bonus de similaritate
+def effective_cost(candidate, unknown_word, penalty_factor=10, sim_factor=5):
     """
-    Pentru fiecare candidat, calculăm costul efectiv:
-      - Dacă puterea candidatului >= puterea cuvântului necunoscut: cost efectiv = cost
-      - Altfel: cost efectiv = cost + penalty_factor * (unknown_score - candidate_score)
-    Alegem candidatul cu costul efectiv minim.
+    Calculează costul efectiv pentru un candidat.
+    - Dacă puterea candidatului >= puterea cuvântului necunoscut:
+        cost efectiv = cost
+    - Altfel:
+        cost efectiv = cost + penalty_factor * (unknown_score - candidate_score)
+    Se scade un bonus bazat pe similaritatea cosine între cuvintele candidat și necunoscut.
     """
     unknown_score = get_abstraction(unknown_word)
+    candidate_score = get_abstraction(candidate['word'])
+    base_cost = candidate['cost']
+    if candidate_score >= unknown_score:
+        effective = base_cost
+    else:
+        effective = base_cost + penalty_factor * (unknown_score - candidate_score)
+    
+    # Calculăm similaritatea între cuvinte folosind spaCy
+    similarity = nlp(candidate['word']).similarity(nlp(unknown_word))
+    # Bonus: cu cât similaritatea este mai mare, cu atât costul efectiv scade
+    effective -= sim_factor * similarity
+    return effective
+
+def adaptive_what_beats(unknown_word, player_words=PLAYER_WORDS, penalty_factor=10, sim_factor=5):
     best_candidate = None
-    best_effective_cost = float('inf')
+    best_eff_cost = float('inf')
     for candidate in player_words:
-        candidate_score = get_abstraction(candidate['word'])
-        base_cost = candidate['cost']
-        if candidate_score >= unknown_score:
-            effective_cost = base_cost
-        else:
-            difference = unknown_score - candidate_score
-            effective_cost = base_cost + penalty_factor * difference
-        if effective_cost < best_effective_cost:
-            best_effective_cost = effective_cost
+        cost_eff = effective_cost(candidate, unknown_word, penalty_factor, sim_factor)
+        if cost_eff < best_eff_cost:
+            best_eff_cost = cost_eff
             best_candidate = candidate
     return best_candidate
 
@@ -248,27 +258,41 @@ def adaptive_what_beats(unknown_word, player_words=PLAYER_WORDS, penalty_factor=
 def play_game(player_id):
     """
     Pentru fiecare rundă:
-      - Face un singur apel GET și preia obiectul cu "word" și "round"
-      - Folosește funcția adaptive_what_beats pentru a alege cuvântul
-      - Face POST cu alegerea și preia statusul jocului
+      - Face un apel GET și preia obiectul cu "word" și "round" corespunzător.
+      - Folosește adaptive_what_beats pentru a alege cuvântul.
+      - Trimite alegerea prin POST și apoi preia statusul jocului.
     """
     for round_id in range(1, NUM_ROUNDS + 1):
-        # Face un apel GET pentru runda curentă
-        response = requests.get(get_url)
-        try:
-            json_response = response.json()
-        except ValueError:
-            json_response = {}
+        # Apel GET
+        round_num = -1
+        unknown_word = ""
+        system_data = {}
+        while round_num != round_id:
+            response = requests.get(get_url)
+            try:
+                json_response = response.json()
+            except ValueError:
+                json_response = {}
+            
+            if isinstance(json_response, list):
+                system_data = next((item for item in json_response if item.get('round') == round_id), {})
+            else:
+                system_data = json_response
+            
+            unknown_word = system_data.get('word', '')
+            round_num = system_data.get('round', -1)
+            print(f"Waiting for round {round_id}, received round {round_num} - word: {unknown_word}")
+            sleep(1)
         
-        unknown_word = json_response.get('word', '')
-        received_round = json_response.get('round', -1)
-        print(f"Round {round_id} - Received round {received_round} - word: {unknown_word}")
+        print(f"\n=== Handling round {round_id} ===")
+        word_domain = assign_domain(unknown_word)
+        word_power = get_abstraction(unknown_word)
+        print(f"System word: {unknown_word} (Power: {word_power}, Domain: {word_domain})")
         
-        # Se alege cuvântul optim folosind algoritmul de selecție
         chosen_candidate = adaptive_what_beats(unknown_word)
-        print(f"Chosen word: {chosen_candidate['word']} (Power: {get_abstraction(chosen_candidate['word'])}, Cost: {chosen_candidate['cost']})")
+        chosen_power = get_abstraction(chosen_candidate['word'])
+        print(f"Chosen word: {chosen_candidate['word']} (Power: {chosen_power}, Cost: {chosen_candidate['cost']})")
         
-        # Trimitem alegerea prin POST
         data = {"player_id": player_id, "word_id": chosen_candidate['id'], "round_id": round_id}
         post_response = requests.post(post_url, json=data)
         try:
@@ -276,13 +300,11 @@ def play_game(player_id):
         except ValueError:
             print("Post response:", post_response.text)
         
-        # Preluăm statusul jocului
         status_response = requests.get(status_url)
         try:
             print("Status:", status_response.json())
         except ValueError:
             print("Status: no valid JSON")
-        
         print("====================================\n")
         sleep(1)
 
