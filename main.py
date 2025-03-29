@@ -3,8 +3,9 @@ from time import sleep
 import spacy
 import numpy as np
 
-# 1. Încărcăm modelul spaCy (asigură-te că ai descărcat modelul: python -m spacy download en_core_web_md)
-nlp = spacy.load("en_core_web_md")
+# 1. Încarcă modelul spaCy mare
+# Asigură-te că rulezi în terminal: python -m spacy download en_core_web_lg
+nlp = spacy.load("en_core_web_lg")
 
 # 2. Configurații de rețea
 host = "http://172.18.4.158:8000"
@@ -79,15 +80,19 @@ PLAYER_WORDS = [
 ]
 
 # 4. Mapping pentru cuvinte cunoscute: asociază domeniul semantic
+# Am extins mapping-ul pentru a fi mai specific. De exemplu:
+# - "Coal", "Pebble", "Rock", "Stone" devin "mineral"
+# - "Leaf", "Twig" devin "plant"
+# - "Whale" devine "aquatic"
 DOMAIN_MAP = {
     "Feather": "light",
-    "Coal": "energy",
-    "Pebble": "nature",
-    "Leaf": "nature",
+    "Coal": "mineral",
+    "Pebble": "mineral",
+    "Leaf": "plant",
     "Paper": "information",
-    "Rock": "strength",
+    "Rock": "mineral",
     "Water": "fluid",
-    "Twig": "nature",
+    "Twig": "plant",
     "Sword": "weapon",
     "Shield": "defense",
     "Gun": "weapon",
@@ -108,11 +113,11 @@ DOMAIN_MAP = {
     "Logic": "abstract",
     "Gravity": "physical",
     "Robots": "technology",
-    "Stone": "nature",
-    "Echo": "sound",
-    "Thunder": "nature",
+    "Stone": "mineral",
+    "Echo": "communication",
+    "Thunder": "elemental",  # considerăm thunder ca fiind un fenomen elementar
     "Karma": "abstract",
-    "Wind": "nature",
+    "Wind": "fluid",
     "Ice": "cold",
     "Sandstorm": "destruction",
     "Laser": "technology",
@@ -122,8 +127,8 @@ DOMAIN_MAP = {
     "War": "conflict",
     "Enlightenment": "abstract",
     "Nuclear Bomb": "destruction",
-    "Volcano": "nature",
-    "Whale": "nature",
+    "Volcano": "elemental",
+    "Whale": "aquatic",
     "Earth": "nature",
     "Moon": "celestial",
     "Star": "celestial",
@@ -139,14 +144,22 @@ DOMAIN_MAP = {
     "Earth’s Core": "physical",
     "Neutron Star": "celestial",
     "Supermassive Black Hole": "celestial",
-    "Entropy": "abstract"
+    "Entropy": "abstract",
+    # Exemplu pentru particule fine:
+    "Dust": "powder",
+    "Ash": "powder"
 }
 
 # 5. Scorurile domeniilor (puterea fiecărui domeniu)
 DOMAIN_STRENGTH = {
     "light": 1,
     "energy": 2,
+    "mineral": 3,
     "nature": 3,
+    "plant": 2,
+    "animal": 3,
+    "aquatic": 4,
+    "powder": 1,
     "information": 1,
     "strength": 3,
     "fluid": 2,
@@ -166,7 +179,9 @@ DOMAIN_STRENGTH = {
     "conflict": 5,
     "celestial": 4,
     "science": 4,
-    "physical": 3
+    "physical": 3,
+    "elemental": 5,
+    "magical": 7  # poți folosi dacă adaugi domeniul "magical" în mapping
 }
 
 # 6. Domenii și prototipuri (pentru cuvinte necunoscute)
@@ -174,8 +189,15 @@ DOMAIN_WORDS = {
     "destruction": ["bomb", "explosion", "nuclear", "tsunami"],
     "healing": ["cure", "vaccine", "healing", "medicine"],
     "weapon": ["sword", "gun", "rifle", "weapon"],
-    "nature": ["rock", "stone", "earth", "leaf", "water", "tree"],
-    "abstract": ["logic", "time", "fate", "enlightenment", "philosophy", "greed", "excess", "avarice"]
+    "mineral": ["coal", "pebble", "rock", "stone", "ore", "crystal"],
+    "plant": ["leaf", "twig", "vine", "flower", "grass"],
+    "nature": ["earth", "tree"],
+    "aquatic": ["whale", "dolphin", "shark", "fish", "seal"],
+    "powder": ["dust", "ash", "silt", "powder"],
+    "abstract": ["logic", "time", "fate", "enlightenment", "philosophy", "greed", "excess", "avarice"],
+    "elemental": ["volcano", "thunder", "storm"],
+    # Poți adăuga și alte domenii, de exemplu:
+    "magical": ["dragon", "phoenix", "unicorn", "spell"]
 }
 
 # 7. Calcul vectori medii pentru fiecare domeniu (pentru clasificarea cuvintelor necunoscute)
@@ -220,15 +242,13 @@ def get_abstraction(word):
         domain = assign_domain(word)
     return DOMAIN_STRENGTH.get(domain, 0)
 
-# 8. Algoritmul de selecție cu penalizare și bonus de similaritate
+# 8. Algoritmul de selecție cu penalizare și bonus de similaritate:
 def effective_cost(candidate, unknown_word, penalty_factor=10, sim_factor=5):
     """
-    Calculează costul efectiv pentru un candidat.
-    - Dacă puterea candidatului >= puterea cuvântului necunoscut:
-        cost efectiv = cost
-    - Altfel:
-        cost efectiv = cost + penalty_factor * (unknown_score - candidate_score)
-    Se scade un bonus bazat pe similaritatea cosine între cuvintele candidat și necunoscut.
+    Calculează costul efectiv pentru un candidat:
+      - Dacă puterea candidatului >= puterea cuvântului necunoscut: cost efectiv = cost
+      - Altfel: cost efectiv = cost + penalty_factor * (unknown_score - candidate_score)
+    Se scade un bonus bazat pe similaritatea cosine dintre cuvintele candidat și necunoscut.
     """
     unknown_score = get_abstraction(unknown_word)
     candidate_score = get_abstraction(candidate['word'])
@@ -238,9 +258,7 @@ def effective_cost(candidate, unknown_word, penalty_factor=10, sim_factor=5):
     else:
         effective = base_cost + penalty_factor * (unknown_score - candidate_score)
     
-    # Calculăm similaritatea între cuvinte folosind spaCy
     similarity = nlp(candidate['word']).similarity(nlp(unknown_word))
-    # Bonus: cu cât similaritatea este mai mare, cu atât costul efectiv scade
     effective -= sim_factor * similarity
     return effective
 
@@ -261,9 +279,13 @@ def play_game(player_id):
       - Face un apel GET și preia obiectul cu "word" și "round" corespunzător.
       - Folosește adaptive_what_beats pentru a alege cuvântul.
       - Trimite alegerea prin POST și apoi preia statusul jocului.
+    Se presupune că JSON-ul de la GET are forma:
+    {
+      "word": "<cuvânt_sistem>",
+      "round": <număr_rundă>
+    }
     """
     for round_id in range(1, NUM_ROUNDS + 1):
-        # Apel GET
         round_num = -1
         unknown_word = ""
         system_data = {}
