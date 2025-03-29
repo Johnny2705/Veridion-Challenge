@@ -12,7 +12,7 @@ post_url = f"{host}/submit-word"
 get_url = f"{host}/get-word"
 status_url = f"{host}/status"
 
-NUM_ROUNDS = 5
+NUM_ROUNDS = 10
 
 # 3. Cuvintele jucatorului cu costuri
 PLAYER_WORDS = [
